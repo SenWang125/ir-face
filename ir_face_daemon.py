@@ -2,12 +2,12 @@
 """IR face recognition daemon — loads models once, serves auth over Unix socket.
 
 Protocol:
-  client → "<username>\n"                    normal auth
-  client → "<username> --verbose\n"          streaming verbose auth
+  client → "<username>\n"               normal:  single byte exit code
+  client → "<username> --scored\n"      scored:  one "DONE" line with sim score
+  client → "<username> --verbose\n"     verbose: streamed frame lines + "DONE" line
 
-Normal response:  single byte exit code
-Verbose response: streamed lines, ending with:
-  "DONE <code> cam=<ms> recog=<ms> sim=<float> frames=<n>\n"
+DONE line format:
+  "DONE <code> cam=<ms> recog=<ms> sim=<float> frames=<n> dark=<n>\n"
 """
 
 import os
