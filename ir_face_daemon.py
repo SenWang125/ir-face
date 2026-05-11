@@ -36,6 +36,29 @@ EXIT_NO_USER  = 12
 EXIT_TOO_DARK = 13
 
 camera_lock = threading.Lock()
+_cap        = None   # persistent camera handle
+_cap_device = None   # device path it was opened on
+
+
+def _get_camera(device, reopen=False):
+    """Return the persistent camera, opening or reopening as needed.
+    Must be called while camera_lock is held."""
+    global _cap, _cap_device
+    if not reopen and _cap is not None and _cap_device == device and _cap.isOpened():
+        return _cap
+    if _cap is not None:
+        _cap.release()
+    cap = cv2.VideoCapture(device, cv2.CAP_V4L2)
+    if not cap.isOpened():
+        _cap = None
+        return None
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 360)
+    cap.set(cv2.CAP_PROP_FPS, 30)
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    _cap = cap
+    _cap_device = device
+    return _cap
 
 
 def _patch_ort_cpu():
@@ -118,34 +141,37 @@ def recognize(det, rec, norm_crop, username, stream=None):
 
     with camera_lock:
         t_cam = time.time()
-        cap = cv2.VideoCapture(device, cv2.CAP_V4L2)
-        if not cap.isOpened():
+        cap = _get_camera(device)
+        if cap is None:
             return EXIT_TIMEOUT, {}
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 360)
-        cap.set(cv2.CAP_PROP_FPS, 30)
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         cam_ms = int((time.time() - t_cam) * 1000)
 
-        total      = 0
-        dark       = 0
-        hits       = 0
-        best_sim   = 0.0
-        best_label = profiles[0][0]
-        t_recog    = time.time()
-        deadline   = t_recog + timeout
+        total       = 0
+        dark        = 0
+        hits        = 0
+        best_sim    = 0.0
+        best_label  = profiles[0][0]
+        read_fails  = 0
+        t_recog     = time.time()
+        deadline    = t_recog + timeout
 
         while time.time() < deadline:
             ret, frame = cap.read()
             if not ret:
+                read_fails += 1
+                if read_fails >= 10:
+                    cap = _get_camera(device, reopen=True)
+                    if cap is None:
+                        break
+                    read_fails = 0
                 continue
+            read_fails = 0
             total += 1
 
             gray = frame if frame.ndim == 2 else cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             if np.mean(gray) < dark_thresh:
                 dark += 1
                 if total >= 15 and dark / total > dark_ratio:
-                    cap.release()
                     return EXIT_TOO_DARK, {}
                 hits = 0
                 continue
@@ -177,7 +203,6 @@ def recognize(det, rec, norm_crop, username, stream=None):
                 hits += 1
                 emit(stream, f"frame {total}: sim={sim:.4f} ({frame_label}) — hit {hits}/{required_hits}")
                 if hits >= required_hits:
-                    cap.release()
                     recog_ms = int((time.time() - t_recog) * 1000)
                     return EXIT_OK, {"cam": cam_ms, "recog": recog_ms,
                                      "sim": best_sim, "frames": total, "dark": dark,
@@ -185,8 +210,6 @@ def recognize(det, rec, norm_crop, username, stream=None):
             else:
                 emit(stream, f"frame {total}: sim={sim:.4f} below threshold, reset")
                 hits = 0
-
-        cap.release()
 
     recog_ms = int((time.time() - t_recog) * 1000)
     return EXIT_TIMEOUT, {"cam": cam_ms, "recog": recog_ms,
@@ -266,6 +289,15 @@ def main():
 
     print(f"[ir-face] Ready in {time.time()-t0:.1f}s (CPU-only, no GPU held)", file=sys.stderr, flush=True)
 
+    # Pre-open the camera so the first auth request pays no V4L2 init cost
+    device = config.get("video", "device", fallback="/dev/video2")
+    with camera_lock:
+        cap = _get_camera(device)
+        if cap is not None:
+            print(f"[ir-face] Camera open: {device}", file=sys.stderr, flush=True)
+        else:
+            print(f"[ir-face] Warning: cannot open {device} — will retry on first auth", file=sys.stderr, flush=True)
+
     try:
         os.unlink(SOCKET_PATH)
     except FileNotFoundError:
@@ -277,6 +309,8 @@ def main():
     srv.listen(4)
 
     def _shutdown(sig, frame):
+        if _cap is not None:
+            _cap.release()
         srv.close()
         try:
             os.unlink(SOCKET_PATH)
