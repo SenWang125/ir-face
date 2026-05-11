@@ -45,12 +45,20 @@ def log(msg):
 
 
 def _tty_print(msg):
-    """Write directly to the user's terminal — visible even under pam_exec quiet."""
-    try:
-        with open("/dev/tty", "w") as tty:
-            print(msg, file=tty, flush=True)
-    except Exception:
-        pass
+    """Write directly to the user's terminal.
+
+    pam_exec.so may call setsid(), making /dev/tty unavailable. PAM_TTY holds
+    the explicit pts path (e.g. /dev/pts/3) which works regardless of session.
+    """
+    for path in (os.environ.get("PAM_TTY"), "/dev/tty"):
+        if not path:
+            continue
+        try:
+            with open(path, "w") as tty:
+                print(msg, file=tty, flush=True)
+            return
+        except Exception:
+            continue
 
 
 def _gui_notify(summary, body):
