@@ -86,10 +86,11 @@ def _gui_notify(summary, body):
         pass
 
 
-def _pam_feedback(msg, summary=None):
+def _pam_feedback(msg, summary=None, newline=False):
     """Deliver auth feedback via TTY and desktop notification."""
-    _tty_print(f"\n[ir-face] {msg}")
-    _gui_notify(summary or "ir-face", f"[ir-face] {msg}")
+    prefix = "\n" if newline else ""
+    _tty_print(f"{prefix}[ir-face] {msg}")
+    _gui_notify(summary or "ir-face", msg)
 
 
 def save_snapshot(frame, label, username, elapsed):
@@ -209,7 +210,7 @@ def main():
             print(f"  {k} = {v}", file=sys.stderr)
         print(file=sys.stderr)
     else:
-        _pam_feedback("Checking face...", "IR Face Auth")
+        _pam_feedback("Authenticating...", newline=True)
 
     # Try daemon first (models already loaded — fast path)
     if VERBOSE:
@@ -220,11 +221,11 @@ def main():
     if result is not None:
         if not VERBOSE:
             if result == EXIT_OK:
-                _pam_feedback("Face recognized.", "IR Face Auth")
+                _pam_feedback("Authenticated.")
             elif result == EXIT_TIMEOUT:
-                _pam_feedback("Face not recognized.", "IR Face Auth")
+                _pam_feedback("Authentication failed.")
             elif result == EXIT_TOO_DARK:
-                _pam_feedback("Face: IR emitter not active.", "IR Face Auth")
+                _pam_feedback("IR emitter inactive.")
         sys.exit(result)
 
     # Direct path — load models inline
@@ -310,7 +311,7 @@ def main():
                 cap.release()
                 log("Too many dark frames — is the IR emitter running?")
                 if not VERBOSE:
-                    _pam_feedback("Face: IR emitter not active.", "IR Face Auth")
+                    _pam_feedback("IR emitter inactive.")
                 sys.exit(EXIT_TOO_DARK)
             hits = 0
             continue
@@ -354,7 +355,7 @@ def main():
                     print(f"Dark frames:     {dark}")
                     print(f"Best similarity: {best_sim:.4f} (threshold {threshold})")
                 if not VERBOSE:
-                    _pam_feedback("Face recognized.", "IR Face Auth")
+                    _pam_feedback("Authenticated.")
                 sys.exit(EXIT_OK)
         else:
             hits = 0
@@ -365,7 +366,7 @@ def main():
         save_snapshot(snap_frame, "FAILED", username, timeout)
     log(f"Timeout. Best similarity: {best_sim:.4f}, consecutive hits: {hits}/{required_hits}")
     if not VERBOSE:
-        _pam_feedback("Face not recognized.", "IR Face Auth")
+        _pam_feedback("Authentication failed.")
     sys.exit(EXIT_TIMEOUT)
 
 
