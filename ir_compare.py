@@ -148,17 +148,31 @@ def load_models(det_pack, rec_pack, providers):
     return det, rec, norm_crop
 
 
-def try_daemon_normal(username):
+def try_daemon_scored(username):
+    """Verbose daemon protocol, but frame lines are suppressed — gives us the sim score."""
     try:
         sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
-        sock.settimeout(8)
+        sock.settimeout(10)
         sock.connect(SOCKET_PATH)
-        sock.sendall(username.encode() + b"\n")
-        result = sock.recv(1)
+        sock.sendall(f"{username} --verbose\n".encode())
+        buf = b""
+        while True:
+            chunk = sock.recv(256)
+            if not chunk:
+                break
+            buf += chunk
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                if line.startswith(b"DONE "):
+                    parts = line.decode().split()
+                    code = int(parts[1])
+                    info = dict(p.split("=") for p in parts[2:] if "=" in p)
+                    sock.close()
+                    return code, float(info.get("sim", 0.0))
         sock.close()
-        return result[0] if result else None
     except Exception:
-        return None
+        pass
+    return None, 0.0
 
 
 def try_daemon_verbose(username):
@@ -215,15 +229,16 @@ def main():
     # Try daemon first (models already loaded — fast path)
     if VERBOSE:
         result = try_daemon_verbose(username)
+        sim    = 0.0
     else:
-        result = try_daemon_normal(username)
+        result, sim = try_daemon_scored(username)
 
     if result is not None:
         if not VERBOSE:
             if result == EXIT_OK:
-                _pam_feedback("Authenticated.")
+                _pam_feedback(f"Face recognized — {sim:.0%} confidence.")
             elif result == EXIT_TIMEOUT:
-                _pam_feedback("Authentication failed.")
+                _pam_feedback(f"Face not recognized — best match {sim:.0%}.")
             elif result == EXIT_TOO_DARK:
                 _pam_feedback("IR emitter inactive.")
         sys.exit(result)
@@ -355,7 +370,7 @@ def main():
                     print(f"Dark frames:     {dark}")
                     print(f"Best similarity: {best_sim:.4f} (threshold {threshold})")
                 if not VERBOSE:
-                    _pam_feedback("Authenticated.")
+                    _pam_feedback(f"Face recognized — {best_sim:.0%} confidence.")
                 sys.exit(EXIT_OK)
         else:
             hits = 0
@@ -366,7 +381,7 @@ def main():
         save_snapshot(snap_frame, "FAILED", username, timeout)
     log(f"Timeout. Best similarity: {best_sim:.4f}, consecutive hits: {hits}/{required_hits}")
     if not VERBOSE:
-        _pam_feedback("Authentication failed.")
+        _pam_feedback(f"Face not recognized — best match {best_sim:.0%}.")
     sys.exit(EXIT_TIMEOUT)
 
 
