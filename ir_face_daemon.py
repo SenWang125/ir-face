@@ -18,6 +18,7 @@ import signal
 import time
 import warnings
 import configparser
+from urllib.parse import quote, unquote
 import cv2
 import numpy as np
 
@@ -98,8 +99,10 @@ def recognize(det, rec, norm_crop, username, stream=None):
     if not os.path.exists(model_path):
         return EXIT_NO_MODEL, {}
 
-    data   = np.load(model_path, allow_pickle=True).item()
-    stored = data["embeddings"]
+    data       = np.load(model_path, allow_pickle=True).item()
+    model_list = data.get("models", [])
+    profiles   = [(m["label"], m["embeddings"]) for m in model_list] if model_list \
+                 else [("Default", data["embeddings"])]
 
     config = configparser.ConfigParser()
     config.read(CONFIG_PATH)
@@ -124,12 +127,13 @@ def recognize(det, rec, norm_crop, username, stream=None):
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         cam_ms = int((time.time() - t_cam) * 1000)
 
-        total    = 0
-        dark     = 0
-        hits     = 0
-        best_sim = 0.0
-        t_recog  = time.time()
-        deadline = t_recog + timeout
+        total      = 0
+        dark       = 0
+        hits       = 0
+        best_sim   = 0.0
+        best_label = profiles[0][0]
+        t_recog    = time.time()
+        deadline   = t_recog + timeout
 
         while time.time() < deadline:
             ret, frame = cap.read()
@@ -158,17 +162,26 @@ def recognize(det, rec, norm_crop, username, stream=None):
             aimg = norm_crop(frame_3ch, landmark=kpss[0], image_size=112)
             feat = rec.get_feat(aimg).flatten()
             emb  = feat / np.linalg.norm(feat)
-            sim  = max(float(np.dot(emb, s)) for s in stored)
-            best_sim = max(best_sim, sim)
+
+            frame_sim, frame_label = max(
+                ((max(float(np.dot(emb, s)) for s in embs), label)
+                 for label, embs in profiles),
+                key=lambda x: x[0],
+            )
+            if frame_sim > best_sim:
+                best_sim   = frame_sim
+                best_label = frame_label
+            sim = frame_sim
 
             if sim >= threshold:
                 hits += 1
-                emit(stream, f"frame {total}: sim={sim:.4f} — hit {hits}/{required_hits}")
+                emit(stream, f"frame {total}: sim={sim:.4f} ({frame_label}) — hit {hits}/{required_hits}")
                 if hits >= required_hits:
                     cap.release()
                     recog_ms = int((time.time() - t_recog) * 1000)
                     return EXIT_OK, {"cam": cam_ms, "recog": recog_ms,
-                                     "sim": best_sim, "frames": total, "dark": dark}
+                                     "sim": best_sim, "frames": total, "dark": dark,
+                                     "profile": best_label}
             else:
                 emit(stream, f"frame {total}: sim={sim:.4f} below threshold, reset")
                 hits = 0
@@ -177,7 +190,8 @@ def recognize(det, rec, norm_crop, username, stream=None):
 
     recog_ms = int((time.time() - t_recog) * 1000)
     return EXIT_TIMEOUT, {"cam": cam_ms, "recog": recog_ms,
-                          "sim": best_sim, "frames": total, "dark": dark}
+                          "sim": best_sim, "frames": total, "dark": dark,
+                          "profile": best_label}
 
 
 def handle_client(conn, det, rec, norm_crop):
@@ -202,13 +216,14 @@ def handle_client(conn, det, rec, norm_crop):
         result, info = recognize(det, rec, norm_crop, username, stream)
 
         if verbose or scored:
-            cam    = info.get("cam", 0)
-            recog  = info.get("recog", 0)
-            sim    = info.get("sim", 0.0)
-            frames = info.get("frames", 0)
-            dark   = info.get("dark", 0)
+            cam     = info.get("cam", 0)
+            recog   = info.get("recog", 0)
+            sim     = info.get("sim", 0.0)
+            frames  = info.get("frames", 0)
+            dark    = info.get("dark", 0)
+            profile = quote(info.get("profile", ""), safe="")
             conn.sendall(
-                f"DONE {result} cam={cam} recog={recog} sim={sim:.4f} frames={frames} dark={dark}\n"
+                f"DONE {result} cam={cam} recog={recog} sim={sim:.4f} frames={frames} dark={dark} profile={profile}\n"
                 .encode()
             )
         else:
@@ -216,7 +231,7 @@ def handle_client(conn, det, rec, norm_crop):
     except Exception as e:
         print(f"[ir-face] handler error: {e}", file=sys.stderr)
         try:
-            conn.sendall(b"DONE 11\n" if b"--verbose" in buf else bytes([EXIT_TIMEOUT]))
+            conn.sendall(b"DONE 11 sim=0.0000 profile=\n" if (b"--verbose" in buf or b"--scored" in buf) else bytes([EXIT_TIMEOUT]))
         except Exception:
             pass
     finally:

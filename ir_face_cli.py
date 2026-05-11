@@ -34,17 +34,34 @@ def cmd_list(args):
 
 
 def cmd_add(args):
-    label = args[0] if args else "Default"
-    user  = get_user()
+    if args:
+        label = args[0]
+    else:
+        label = input("Profile name [Default]: ").strip() or "Default"
+    user = get_user()
     os.execv("/usr/local/bin/ir-enroll", ["/usr/local/bin/ir-enroll", user, label])
 
 
 def cmd_remove(args):
-    if not args:
-        print("Usage: ir-face remove <label> [username]")
-        return 1
-    label    = args[0]
     username = args[1] if len(args) > 1 else get_user()
+    if not args:
+        path = os.path.join(MODEL_DIR, f"{username}.npy")
+        if not os.path.exists(path):
+            print(f"No enrolled face for '{username}'")
+            return 1
+        data   = np.load(path, allow_pickle=True).item()
+        models = data.get("models", [])
+        if not models:
+            print("No profiles found.")
+            return 1
+        print(f"Enrolled profiles for '{username}':")
+        for m in models:
+            print(f"  {m['label']}")
+        label = input("Profile name to remove: ").strip()
+        if not label:
+            return 1
+    else:
+        label = args[0]
     path = os.path.join(MODEL_DIR, f"{username}.npy")
     if not os.path.exists(path):
         print(f"No model for '{username}'")
@@ -72,15 +89,34 @@ def cmd_test(args):
     os.execv("/usr/local/bin/ir-compare", ["/usr/local/bin/ir-compare", user, "--verbose"])
 
 
+def _config_write(config):
+    import io, subprocess
+    buf = io.StringIO()
+    config.write(buf)
+    r = subprocess.run(
+        ["sudo", "tee", CONFIG_PATH],
+        input=buf.getvalue().encode(),
+        capture_output=True,
+    )
+    return r.returncode == 0
+
+
 def cmd_config(args):
     config = configparser.ConfigParser()
     config.read(CONFIG_PATH)
+
     if not args:
+        editor = os.environ.get("EDITOR", "nano")
+        os.execvp("sudo", ["sudo", editor, CONFIG_PATH])
+        return 0
+
+    if args[0] == "show":
         for section in config.sections():
             print(f"[{section}]")
             for k, v in config.items(section):
                 print(f"  {k} = {v}")
         return 0
+
     key = args[0]
     if len(args) == 1:
         for section in config.sections():
@@ -89,19 +125,12 @@ def cmd_config(args):
                 return 0
         print(f"Key '{key}' not found in {CONFIG_PATH}")
         return 1
+
     value = args[1]
     for section in config.sections():
         if config.has_option(section, key):
             config.set(section, key, value)
-            import io, subprocess
-            buf = io.StringIO()
-            config.write(buf)
-            r = subprocess.run(
-                ["sudo", "tee", CONFIG_PATH],
-                input=buf.getvalue().encode(),
-                capture_output=True,
-            )
-            if r.returncode != 0:
+            if not _config_write(config):
                 print(f"Write failed (try: sudo ir-face config {key} {value})")
                 return 1
             print(f"{key} = {value}")
@@ -110,12 +139,40 @@ def cmd_config(args):
     return 1
 
 
+def cmd_enable(args):
+    config = configparser.ConfigParser()
+    config.read(CONFIG_PATH)
+    if not config.has_section("core"):
+        config.add_section("core")
+    config.set("core", "enabled", "true")
+    if not _config_write(config):
+        print("Write failed (run with sudo)")
+        return 1
+    print("ir-face enabled.")
+    return 0
+
+
+def cmd_disable(args):
+    config = configparser.ConfigParser()
+    config.read(CONFIG_PATH)
+    if not config.has_section("core"):
+        config.add_section("core")
+    config.set("core", "enabled", "false")
+    if not _config_write(config):
+        print("Write failed (run with sudo)")
+        return 1
+    print("ir-face disabled. Password authentication will be used instead.")
+    return 0
+
+
 COMMANDS = {
-    "list":   (cmd_list,   "list   [user]             show enrolled models"),
-    "add":    (cmd_add,    "add    [label]            enroll face (default: Default)"),
-    "remove": (cmd_remove, "remove <label> [user]     delete a model label"),
-    "test":   (cmd_test,   "test   [user]             run recognition with verbose output"),
-    "config": (cmd_config, "config [key [value]]      view or edit config.ini"),
+    "list":    (cmd_list,    "list    [user]              show enrolled models"),
+    "add":     (cmd_add,     "add     [label]             enroll face (default: Default)"),
+    "remove":  (cmd_remove,  "remove  <label> [user]      delete a model label"),
+    "test":    (cmd_test,    "test    [user]              run recognition with verbose output"),
+    "config":  (cmd_config,  "config  [show|key [value]]  open editor or view/edit config"),
+    "enable":  (cmd_enable,  "enable                      enable face authentication"),
+    "disable": (cmd_disable, "disable                     disable face authentication"),
 }
 
 
@@ -127,7 +184,8 @@ def usage():
         print(f"  {desc}")
     print()
     print("Notes:")
-    print("  add / remove / config set — require sudo (write to /etc/ir-face/)")
+    print("  add / remove / config set / enable / disable — require sudo")
+    print("  config (no args) opens config in $EDITOR")
     print("  test — runs with verbose recognition output")
 
 

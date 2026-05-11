@@ -18,6 +18,7 @@ import time
 import warnings
 import configparser
 import socket as _socket
+from urllib.parse import unquote
 import cv2
 import numpy as np
 
@@ -168,12 +169,12 @@ def try_daemon_scored(username):
                     parts = line.split()
                     code  = int(parts[1])
                     info  = dict(p.split("=") for p in parts[2:] if "=" in p)
-                    return code, float(info.get("sim", 0.0))
+                    return code, float(info.get("sim", 0.0)), unquote(info.get("profile", ""))
                 break
         sock.close()
     except Exception:
         pass
-    return None, 0.0
+    return None, 0.0, ""
 
 
 def try_daemon_verbose(username):
@@ -219,6 +220,9 @@ def main():
     username = args[0]
     config.read(CONFIG_PATH)
 
+    if not config.getboolean("core", "enabled", fallback=True):
+        sys.exit(EXIT_NO_MODEL)
+
     if VERBOSE:
         print("[core]", file=sys.stderr)
         for k, v in config.items("core"):
@@ -229,15 +233,17 @@ def main():
 
     # Try daemon first (models already loaded — fast path)
     if VERBOSE:
-        result = try_daemon_verbose(username)
-        sim    = 0.0
+        result  = try_daemon_verbose(username)
+        sim     = 0.0
+        profile = ""
     else:
-        result, sim = try_daemon_scored(username)
+        result, sim, profile = try_daemon_scored(username)
 
     if result is not None:
         if not VERBOSE:
             if result == EXIT_OK:
-                _pam_feedback(f"Face recognized — {sim:.0%} confidence.")
+                label = f" — {profile}" if profile and profile != "Default" else ""
+                _pam_feedback(f"Face recognized{label} — {sim:.0%} confidence.")
             elif result == EXIT_TIMEOUT:
                 _pam_feedback(f"Face not recognized — best match {sim:.0%}.")
             elif result == EXIT_TOO_DARK:
