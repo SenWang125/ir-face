@@ -80,8 +80,8 @@ def _gui_notify(summary, body):
 
 def _pam_feedback(msg, summary=None):
     """Deliver auth feedback via TTY and desktop notification."""
-    _tty_print(msg)
-    _gui_notify(summary or "IR Face Auth", msg)
+    _tty_print(f"\n[ir-face] {msg}")
+    _gui_notify(summary or "ir-face", f"[ir-face] {msg}")
 
 
 def save_snapshot(frame, label, username, elapsed):
