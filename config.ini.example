@@ -1,0 +1,54 @@
+[core]
+# Cosine similarity threshold for face match (0.0–1.0, higher = stricter)
+certainty = 0.65
+
+# Consecutive matching frames required to grant access (anti-spoof liveness check)
+required_hits = 3
+
+# Model pack used when det_pack / rec_pack are not set explicitly
+recognition_model = buffalo_m
+
+# Detector model pack (buffalo_s = SCRFD-500M fast, buffalo_m = SCRFD-2.5G, buffalo_l = SCRFD-10G)
+det_pack = buffalo_s
+
+# Recognizer model pack (buffalo_s = MobileFaceNet, buffalo_m/l = ArcFace R50)
+# IMPORTANT: enrollment and comparison must use the same rec_pack — re-enroll after changing
+rec_pack = buffalo_m
+
+# Maximum number of stored face models per user
+max_models = 5
+
+# Print timing + similarity report after each auth attempt (useful for debugging)
+end_report = false
+
+[video]
+# IR camera V4L2 device node
+device = /dev/video2
+
+# Seconds to attempt recognition before giving up (exit code 11)
+timeout = 5
+
+# Frames below this mean brightness are considered too dark
+dark_threshold = 8.0
+
+# Exit with code 13 if this fraction of total frames are dark
+dark_max_ratio = 0.8
+
+# CLAHE contrast enhancement clip limit (higher = more aggressive)
+clahe_clip = 2.0
+
+# Number of face frames to capture during enrollment
+enrollment_frames = 60
+
+# Minimum interval between accepted enrollment frames (seconds)
+enrollment_interval = 0.08
+
+[snapshots]
+# Save a frame on successful authentication (for auditing)
+capture_successful = false
+
+# Save a frame on failed authentication (for debugging)
+capture_failed = false
+
+# Directory to write snapshot images
+snapshot_dir = /tmp/ir-face-snapshots

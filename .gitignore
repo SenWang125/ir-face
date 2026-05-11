@@ -1,0 +1,24 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Virtual environment (install.sh creates this at /opt/ir-face/venv)
+venv/
+ir_face_venv/
+
+# Enrolled face models — contain biometric data, never commit
+*.npy
+
+# Snapshot frames
+/tmp/ir-face-snapshots/
+
+# ORT cache files
+*.ort
+
+# Editor
+.vscode/
+.idea/
+*.swp
