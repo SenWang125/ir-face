@@ -191,15 +191,17 @@ def handle_client(conn, det, rec, norm_crop):
         parts    = buf.split(b"\n")[0].decode().strip().split()
         username = parts[0] if parts else ""
         verbose  = "--verbose" in parts
+        scored   = "--scored"  in parts
 
         if not username:
-            conn.sendall(b"DONE 12\n" if verbose else bytes([EXIT_NO_USER]))
+            conn.sendall(b"DONE 12\n" if (verbose or scored) else bytes([EXIT_NO_USER]))
             return
 
+        # scored: no per-frame stream, just the final DONE line
         stream = conn if verbose else None
         result, info = recognize(det, rec, norm_crop, username, stream)
 
-        if verbose:
+        if verbose or scored:
             cam    = info.get("cam", 0)
             recog  = info.get("recog", 0)
             sim    = info.get("sim", 0.0)

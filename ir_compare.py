@@ -149,26 +149,27 @@ def load_models(det_pack, rec_pack, providers):
 
 
 def try_daemon_scored(username):
-    """Verbose daemon protocol, but frame lines are suppressed — gives us the sim score."""
+    """Scored protocol: daemon runs auth silently and returns one DONE line with sim score."""
     try:
         sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
         sock.settimeout(10)
         sock.connect(SOCKET_PATH)
-        sock.sendall(f"{username} --verbose\n".encode())
+        sock.sendall(f"{username} --scored\n".encode())
         buf = b""
         while True:
             chunk = sock.recv(256)
             if not chunk:
                 break
             buf += chunk
-            while b"\n" in buf:
-                line, buf = buf.split(b"\n", 1)
-                if line.startswith(b"DONE "):
-                    parts = line.decode().split()
-                    code = int(parts[1])
-                    info = dict(p.split("=") for p in parts[2:] if "=" in p)
-                    sock.close()
+            if b"\n" in buf:
+                line = buf.split(b"\n")[0].decode()
+                sock.close()
+                if line.startswith("DONE "):
+                    parts = line.split()
+                    code  = int(parts[1])
+                    info  = dict(p.split("=") for p in parts[2:] if "=" in p)
                     return code, float(info.get("sim", 0.0))
+                break
         sock.close()
     except Exception:
         pass
