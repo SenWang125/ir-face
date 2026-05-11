@@ -53,6 +53,37 @@ def _tty_print(msg):
         pass
 
 
+def _gui_notify(summary, body):
+    """Send a desktop notification to the authenticating user's session.
+
+    Works for GUI screen unlock (D-Bus session already running).
+    Silently does nothing for initial login (no session yet).
+    """
+    pam_user = os.environ.get("PAM_USER", "")
+    if not pam_user:
+        return
+    try:
+        import pwd, subprocess
+        uid = pwd.getpwnam(pam_user).pw_uid
+        bus = f"/run/user/{uid}/bus"
+        if not os.path.exists(bus):
+            return
+        subprocess.run(
+            ["sudo", "-u", pam_user,
+             "env", f"DBUS_SESSION_BUS_ADDRESS=unix:path={bus}",
+             "notify-send", "-t", "3000", summary, body],
+            timeout=2, capture_output=True,
+        )
+    except Exception:
+        pass
+
+
+def _pam_feedback(msg, summary=None):
+    """Deliver auth feedback via TTY and desktop notification."""
+    _tty_print(msg)
+    _gui_notify(summary or "IR Face Auth", msg)
+
+
 def save_snapshot(frame, label, username, elapsed):
     snap_dir = config.get("snapshots", "snapshot_dir", fallback="/tmp/ir-face-snapshots")
     os.makedirs(snap_dir, exist_ok=True)
@@ -170,7 +201,7 @@ def main():
             print(f"  {k} = {v}", file=sys.stderr)
         print(file=sys.stderr)
     else:
-        _tty_print("Checking face...")
+        _pam_feedback("Checking face...", "IR Face Auth")
 
     # Try daemon first (models already loaded — fast path)
     if VERBOSE:
@@ -181,9 +212,11 @@ def main():
     if result is not None:
         if not VERBOSE:
             if result == EXIT_OK:
-                _tty_print("Face recognized.")
+                _pam_feedback("Face recognized.", "IR Face Auth")
+            elif result == EXIT_TIMEOUT:
+                _pam_feedback("Face not recognized.", "IR Face Auth")
             elif result == EXIT_TOO_DARK:
-                _tty_print("Face: IR emitter not active.")
+                _pam_feedback("Face: IR emitter not active.", "IR Face Auth")
         sys.exit(result)
 
     # Direct path — load models inline
@@ -269,7 +302,7 @@ def main():
                 cap.release()
                 log("Too many dark frames — is the IR emitter running?")
                 if not VERBOSE:
-                    _tty_print("Face: IR emitter not active.")
+                    _pam_feedback("Face: IR emitter not active.", "IR Face Auth")
                 sys.exit(EXIT_TOO_DARK)
             hits = 0
             continue
@@ -313,7 +346,7 @@ def main():
                     print(f"Dark frames:     {dark}")
                     print(f"Best similarity: {best_sim:.4f} (threshold {threshold})")
                 if not VERBOSE:
-                    _tty_print("Face recognized.")
+                    _pam_feedback("Face recognized.", "IR Face Auth")
                 sys.exit(EXIT_OK)
         else:
             hits = 0
@@ -323,6 +356,8 @@ def main():
     if cap_fail and snap_frame is not None:
         save_snapshot(snap_frame, "FAILED", username, timeout)
     log(f"Timeout. Best similarity: {best_sim:.4f}, consecutive hits: {hits}/{required_hits}")
+    if not VERBOSE:
+        _pam_feedback("Face not recognized.", "IR Face Auth")
     sys.exit(EXIT_TIMEOUT)
 
 
