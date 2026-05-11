@@ -1,6 +1,14 @@
 #!/bin/bash
 INSTALL_DIR=/opt/ir-face
 VENV=$INSTALL_DIR/venv
-NVIDIA_LIBS="$VENV/lib/python$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')/site-packages/nvidia"
-export LD_LIBRARY_PATH="$NVIDIA_LIBS/cufft/lib:$NVIDIA_LIBS/cublas/lib:$NVIDIA_LIBS/cuda_runtime/lib:/opt/cuda/lib64:${LD_LIBRARY_PATH}"
+
+_PY_VER=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+_NVIDIA="$VENV/lib/python${_PY_VER}/site-packages/nvidia"
+_CUDA_EXTRA=""
+for _d in /usr/local/cuda/lib64 /opt/cuda/lib64 /usr/lib/cuda/lib64 \
+          /usr/lib/x86_64-linux-gnu /usr/lib64; do
+    [[ -d "$_d" ]] && _CUDA_EXTRA="${_CUDA_EXTRA}:${_d}"
+done
+export LD_LIBRARY_PATH="${_NVIDIA}/cufft/lib:${_NVIDIA}/cublas/lib:${_NVIDIA}/cuda_runtime/lib${_CUDA_EXTRA}:${LD_LIBRARY_PATH}"
+
 exec "$VENV/bin/python3" "$INSTALL_DIR/ir_enroll.py" "$@"

@@ -1,4 +1,7 @@
 [core]
+# Set to false to disable face authentication entirely (fall through to password)
+enabled = true
+
 # Cosine similarity threshold for face match (0.0–1.0, higher = stricter)
 certainty = 0.65
 
