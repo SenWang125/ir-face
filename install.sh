@@ -171,9 +171,9 @@ info "Service installed"
 echo "[7/7] PAM configuration..."
 echo ""
 echo "  Choose PAM auth order:"
-echo "    1) Face first    — face recognition attempted before password prompt"
-echo "    2) Password first — password first; face unlock on wrong/empty password"
-echo "    3) Skip          — configure PAM manually later"
+echo "    1) Password first — enter password to unlock; face runs as fallback on wrong/empty password (recommended)"
+echo "    2) Face first     — face recognition runs before password prompt"
+echo "    3) Skip           — configure PAM manually later"
 ask "Choice [1/2/3]: " PAM_CHOICE
 
 pam_write_file() {
@@ -258,12 +258,12 @@ configure_dm() {
 
 case "$PAM_CHOICE" in
     1)
-        configure_pam_targets face-first
-        info "PAM: face-first"
+        configure_pam_targets password-first
+        info "PAM: password-first (face as fallback)"
         ;;
     2)
-        configure_pam_targets password-first
-        info "PAM: password-first"
+        configure_pam_targets face-first
+        info "PAM: face-first"
         ;;
     3)
         info "Skipping PAM — configure /etc/pam.d/{sudo,login,<dm>} manually"

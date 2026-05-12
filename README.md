@@ -6,16 +6,16 @@ IR face authentication for Linux — PAM-based face unlock using [InsightFace](h
 
 A background daemon (`ir-face-daemon`) loads face recognition models once at boot and serves each auth over a Unix socket in ~1–2 s (camera open + 3 matching frames). If the daemon is not running, `ir-compare` falls back to inline CPU model loading (~3–8 s).
 
-**Auth flow (face-first, recommended):**
-1. `pam_exec.so` invokes `ir-compare`
-2. IR camera captures frames → cosine similarity against enrolled embeddings
-3. 3 consecutive matches above threshold → access granted
-4. Timeout → falls through to password
+**Auth flow (password-first, recommended):**
+1. Enter password → correct: done immediately
+2. Wrong password or empty field → `pam_exec.so` invokes `ir-compare`
+3. IR camera captures frames → cosine similarity against enrolled embeddings
+4. 3 consecutive matches above threshold → access granted
+5. Timeout → password error returned to the application
 
-**Auth flow (password-first):**
-1. Enter password → correct: done
-2. Wrong/empty → face recognition attempted
-3. Face match → access granted; timeout → password error
+**Auth flow (face-first, alternative):**
+1. `pam_exec.so` invokes `ir-compare` before any password prompt
+2. Face match → access granted; timeout → falls through to password
 
 ## Requirements
 
@@ -155,9 +155,9 @@ If the emitter service is detected at install time, `ir-face.service` will depen
 ### Arch / RHEL / Fedora
 
 ```
-# /etc/pam.d/sudo  (face-first example)
-auth  sufficient  pam_exec.so   quiet expose_authtok  /usr/local/bin/ir-compare
+# /etc/pam.d/sudo  (password-first, face as fallback)
 auth  sufficient  pam_unix.so   try_first_pass likeauth nullok
+auth  sufficient  pam_exec.so   quiet expose_authtok  /usr/local/bin/ir-compare
 auth  optional    pam_permit.so
 auth  required    pam_env.so
 auth  include     system-auth
@@ -167,11 +167,11 @@ session include   system-auth
 
 ### Debian / Ubuntu
 
-Same structure, replace `system-auth` with `common-auth` and session with `common-session`:
+Same structure, replace `system-auth` with `common-auth`:
 
 ```
-auth  sufficient  pam_exec.so   quiet expose_authtok  /usr/local/bin/ir-compare
 auth  sufficient  pam_unix.so   try_first_pass likeauth nullok
+auth  sufficient  pam_exec.so   quiet expose_authtok  /usr/local/bin/ir-compare
 auth  optional    pam_permit.so
 auth  required    pam_env.so
 auth  include     common-auth
@@ -180,6 +180,8 @@ session include   common-session
 ```
 
 Apply to `/etc/pam.d/sudo`, `/etc/pam.d/login`, and your display manager (`sddm`, `gdm-password`, `lightdm`).
+
+**SDDM / screen lock tip:** Leave the password field empty and click Unlock — `pam_unix.so` rejects the empty input, which immediately triggers face recognition. No need to type a wrong password.
 
 ## Feedback during auth
 
