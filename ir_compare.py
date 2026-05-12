@@ -35,6 +35,7 @@ EXIT_TOO_DARK = 13
 CONFIG_PATH     = "/etc/ir-face/config.ini"
 MODEL_DIR       = "/etc/ir-face/models"
 INSIGHTFACE_DIR = "/etc/ir-face/insightface/models"
+ANTISPOOF_DIR   = "/etc/ir-face/antispoof"
 SOCKET_PATH     = "/run/ir-face.sock"
 
 VERBOSE = "--verbose" in sys.argv or "-v" in sys.argv
@@ -147,6 +148,45 @@ def load_models(det_pack, rec_pack, providers):
     rec.prepare(ctx_id=0)
 
     return det, rec, norm_crop
+
+
+def load_antispoof_models():
+    import onnxruntime as ort
+    entries = [("MiniFASNetV2.onnx", 2.7), ("MiniFASNetV1SE.onnx", 4.0)]
+    sessions = []
+    for fname, scale in entries:
+        path = os.path.join(ANTISPOOF_DIR, fname)
+        if os.path.exists(path):
+            sess = ort.InferenceSession(path, providers=["CPUExecutionProvider"])
+            sessions.append((sess, scale))
+    return sessions
+
+
+def _antispoof_crop(frame, bbox, scale):
+    x1, y1, x2, y2 = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
+    cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+    side   = int(max(x2 - x1, y2 - y1) * scale)
+    half   = side // 2
+    H, W   = frame.shape[:2]
+    lo_x, lo_y = cx - half, cy - half
+    hi_x, hi_y = cx + half, cy + half
+    crop = frame[max(0, lo_y):min(H, hi_y), max(0, lo_x):min(W, hi_x)]
+    pad_t = max(0, -lo_y);  pad_b = max(0, hi_y - H)
+    pad_l = max(0, -lo_x);  pad_r = max(0, hi_x - W)
+    if pad_t or pad_b or pad_l or pad_r:
+        crop = cv2.copyMakeBorder(crop, pad_t, pad_b, pad_l, pad_r, cv2.BORDER_REPLICATE)
+    return cv2.resize(crop, (80, 80))
+
+
+def _run_antispoof(sessions, frame, bbox):
+    scores = []
+    for sess, scale in sessions:
+        crop = _antispoof_crop(frame, bbox, scale)
+        inp  = crop.astype(np.float32).transpose(2, 0, 1)[np.newaxis]
+        out  = sess.run(None, {sess.get_inputs()[0].name: inp})[0][0]
+        e    = np.exp(out - out.max())
+        scores.append(float(e[1] / e.sum()))  # class 1 = real face
+    return sum(scores) / len(scores)
 
 
 def try_daemon_scored(username):
@@ -264,21 +304,28 @@ def main():
                  else [("Default", data["embeddings"])]
     log(f"Loaded {sum(len(e) for _, e in profiles)} embeddings for '{username}' ({len(profiles)} profile(s))")
 
-    threshold     = config.getfloat("core",  "certainty",           fallback=0.65)
-    required_hits = config.getint( "core",  "required_hits",        fallback=3)
-    model_name    = config.get(   "core",  "recognition_model",     fallback="buffalo_m")
-    det_pack      = config.get(   "core",  "det_pack",               fallback=model_name)
-    rec_pack      = config.get(   "core",  "rec_pack",               fallback=model_name)
-    end_report    = config.getboolean("core", "end_report",         fallback=False)
-    device        = config.get(   "video", "device",                fallback="/dev/video2")
-    timeout       = config.getint("video", "timeout",               fallback=5)
-    dark_thresh   = config.getfloat("video", "dark_threshold",      fallback=8.0)
-    dark_ratio    = config.getfloat("video", "dark_max_ratio",      fallback=0.8)
-    clahe_clip    = config.getfloat("video", "clahe_clip",          fallback=2.0)
-    cap_ok        = config.getboolean("snapshots", "capture_successful", fallback=False)
-    cap_fail      = config.getboolean("snapshots", "capture_failed",     fallback=False)
+    threshold          = config.getfloat("core",  "certainty",           fallback=0.65)
+    required_hits      = config.getint( "core",  "required_hits",        fallback=3)
+    model_name         = config.get(   "core",  "recognition_model",     fallback="buffalo_m")
+    det_pack           = config.get(   "core",  "det_pack",               fallback=model_name)
+    rec_pack           = config.get(   "core",  "rec_pack",               fallback=model_name)
+    end_report         = config.getboolean("core", "end_report",          fallback=False)
+    antispoof_enabled  = config.getboolean("core", "antispoof_enabled",   fallback=False)
+    antispoof_thresh   = config.getfloat("core",  "antispoof_threshold",  fallback=0.45)
+    device             = config.get(   "video", "device",                fallback="/dev/video2")
+    timeout            = config.getint("video", "timeout",               fallback=5)
+    dark_thresh        = config.getfloat("video", "dark_threshold",      fallback=8.0)
+    dark_ratio         = config.getfloat("video", "dark_max_ratio",      fallback=0.8)
+    clahe_clip         = config.getfloat("video", "clahe_clip",          fallback=2.0)
+    cap_ok             = config.getboolean("snapshots", "capture_successful", fallback=False)
+    cap_fail           = config.getboolean("snapshots", "capture_failed",     fallback=False)
 
     log(f"det={det_pack}  rec={rec_pack}")
+
+    antispoof_sessions = []
+    if antispoof_enabled:
+        antispoof_sessions = load_antispoof_models()
+        log(f"anti-spoof: {len(antispoof_sessions)} model(s) loaded, threshold={antispoof_thresh}")
 
     # CPU-only for direct path: CUDA context init costs ~3.5s per process,
     # which exceeds GPU inference savings for just a few frames.
@@ -351,6 +398,13 @@ def main():
             log(f"frame {total}: no face detected")
             hits = 0
             continue
+
+        if antispoof_sessions:
+            real_prob = _run_antispoof(antispoof_sessions, frame_3ch, bboxes[0])
+            log(f"frame {total}: anti-spoof real_prob={real_prob:.3f}")
+            if real_prob < antispoof_thresh:
+                hits = 0
+                continue
 
         aimg = norm_crop(frame_3ch, landmark=kpss[0], image_size=112)
         feat = rec.get_feat(aimg).flatten()

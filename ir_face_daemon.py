@@ -28,6 +28,7 @@ SOCKET_PATH     = "/run/ir-face.sock"
 CONFIG_PATH     = "/etc/ir-face/config.ini"
 MODEL_DIR       = "/etc/ir-face/models"
 INSIGHTFACE_DIR = "/etc/ir-face/insightface/models"
+ANTISPOOF_DIR   = "/etc/ir-face/antispoof"
 
 EXIT_OK       = 0
 EXIT_NO_MODEL = 10
@@ -85,6 +86,45 @@ def _find_model(pack, prefix):
     return None
 
 
+def load_antispoof_models():
+    import onnxruntime as ort
+    entries = [("MiniFASNetV2.onnx", 2.7), ("MiniFASNetV1SE.onnx", 4.0)]
+    sessions = []
+    for fname, scale in entries:
+        path = os.path.join(ANTISPOOF_DIR, fname)
+        if os.path.exists(path):
+            sess = ort.InferenceSession(path, providers=["CPUExecutionProvider"])
+            sessions.append((sess, scale))
+    return sessions
+
+
+def _antispoof_crop(frame, bbox, scale):
+    x1, y1, x2, y2 = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
+    cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+    side   = int(max(x2 - x1, y2 - y1) * scale)
+    half   = side // 2
+    H, W   = frame.shape[:2]
+    lo_x, lo_y = cx - half, cy - half
+    hi_x, hi_y = cx + half, cy + half
+    crop = frame[max(0, lo_y):min(H, hi_y), max(0, lo_x):min(W, hi_x)]
+    pad_t = max(0, -lo_y);  pad_b = max(0, hi_y - H)
+    pad_l = max(0, -lo_x);  pad_r = max(0, hi_x - W)
+    if pad_t or pad_b or pad_l or pad_r:
+        crop = cv2.copyMakeBorder(crop, pad_t, pad_b, pad_l, pad_r, cv2.BORDER_REPLICATE)
+    return cv2.resize(crop, (80, 80))
+
+
+def _run_antispoof(sessions, frame, bbox):
+    scores = []
+    for sess, scale in sessions:
+        crop = _antispoof_crop(frame, bbox, scale)
+        inp  = crop.astype(np.float32).transpose(2, 0, 1)[np.newaxis]
+        out  = sess.run(None, {sess.get_inputs()[0].name: inp})[0][0]
+        e    = np.exp(out - out.max())
+        scores.append(float(e[1] / e.sum()))  # class 1 = real face
+    return sum(scores) / len(scores)
+
+
 def load_models(det_pack, rec_pack):
     from insightface.model_zoo import model_zoo
     from insightface.utils.face_align import norm_crop
@@ -115,7 +155,7 @@ def emit(stream, msg):
             pass
 
 
-def recognize(det, rec, norm_crop, username, stream=None):
+def recognize(det, rec, norm_crop, username, stream=None, antispoof_sessions=None, antispoof_thresh=0.45):
     model_path = os.path.join(MODEL_DIR, f"{username}.npy")
     if not os.path.exists(model_path):
         return EXIT_NO_MODEL, {}
@@ -134,6 +174,7 @@ def recognize(det, rec, norm_crop, username, stream=None):
     dark_thresh   = config.getfloat("video", "dark_threshold",  fallback=8.0)
     dark_ratio    = config.getfloat("video", "dark_max_ratio",  fallback=0.8)
     clahe_clip    = config.getfloat("video", "clahe_clip",      fallback=2.0)
+    as_sessions   = antispoof_sessions or []
 
     clahe = cv2.createCLAHE(clipLimit=clahe_clip, tileGridSize=(8, 8))
 
@@ -184,6 +225,13 @@ def recognize(det, rec, norm_crop, username, stream=None):
                     hits = 0
                     continue
 
+                if as_sessions:
+                    real_prob = _run_antispoof(as_sessions, frame_3ch, bboxes[0])
+                    if real_prob < antispoof_thresh:
+                        emit(stream, f"frame {total}: anti-spoof rejected (real={real_prob:.3f})")
+                        hits = 0
+                        continue
+
                 aimg = norm_crop(frame_3ch, landmark=kpss[0], image_size=112)
                 feat = rec.get_feat(aimg).flatten()
                 emb  = feat / np.linalg.norm(feat)
@@ -216,7 +264,7 @@ def recognize(det, rec, norm_crop, username, stream=None):
     return result, info
 
 
-def handle_client(conn, det, rec, norm_crop):
+def handle_client(conn, det, rec, norm_crop, antispoof_sessions=None, antispoof_thresh=0.45):
     try:
         buf = b""
         while b"\n" not in buf:
@@ -241,7 +289,8 @@ def handle_client(conn, det, rec, norm_crop):
 
         # scored: no per-frame stream, just the final DONE line
         stream = conn if verbose else None
-        result, info = recognize(det, rec, norm_crop, username, stream)
+        result, info = recognize(det, rec, norm_crop, username, stream,
+                                 antispoof_sessions, antispoof_thresh)
 
         if verbose or scored:
             cam     = info.get("cam", 0)
@@ -275,6 +324,9 @@ def main():
 
     device = config.get("video", "device", fallback="/dev/video2")
 
+    antispoof_enabled = config.getboolean("core", "antispoof_enabled",  fallback=False)
+    antispoof_thresh  = config.getfloat( "core", "antispoof_threshold", fallback=0.45)
+
     print(f"[ir-face] Loading det={det_pack} rec={rec_pack} (CPU)...", file=sys.stderr, flush=True)
     t0 = time.time()
 
@@ -296,6 +348,14 @@ def main():
     devnull.close()
     os.dup2(saved2, 2)
     os.close(saved2)
+
+    antispoof_sessions = []
+    if antispoof_enabled:
+        antispoof_sessions = load_antispoof_models()
+        if antispoof_sessions:
+            print(f"[ir-face] Anti-spoofing: {len(antispoof_sessions)} model(s), threshold={antispoof_thresh}", file=sys.stderr, flush=True)
+        else:
+            print(f"[ir-face] Anti-spoofing enabled but no models found in {ANTISPOOF_DIR}/", file=sys.stderr, flush=True)
 
     print(f"[ir-face] Ready in {time.time()-t0:.1f}s (CPU-only, no GPU held)", file=sys.stderr, flush=True)
 
@@ -328,7 +388,9 @@ def main():
         except OSError:
             break
         threading.Thread(
-            target=handle_client, args=(conn, det, rec, norm_crop), daemon=True
+            target=handle_client,
+            args=(conn, det, rec, norm_crop, antispoof_sessions, antispoof_thresh),
+            daemon=True,
         ).start()
 
 
