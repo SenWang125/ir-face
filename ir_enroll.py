@@ -138,8 +138,13 @@ def main():
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 360)
 
-    print(f"\nEnrolling '{label}' for user '{username}'.")
-    print(f"Look directly at the camera. Collecting {frames_to_capture} frames... (Q to cancel)\n")
+    headless = not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+    if headless:
+        print(f"\nEnrolling '{label}' for user '{username}' (headless mode).")
+    else:
+        print(f"\nEnrolling '{label}' for user '{username}'.")
+    print(f"Look directly at the camera. Collecting {frames_to_capture} frames..."
+          + ("" if headless else " (Q to cancel)") + "\n")
 
     embeddings     = []
     no_face_streak = 0
@@ -165,40 +170,38 @@ def main():
             embeddings.append(emb)
             last_accepted  = now
             no_face_streak = 0
-
-            preview = frame_3ch.copy()
-            x1, y1, x2, y2 = [int(v) for v in bboxes[0][:4]]
-            cv2.rectangle(preview, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            cv2.putText(preview, f"{label}: {len(embeddings)}/{frames_to_capture}",
-                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-        elif has_face:
-            preview = frame_3ch.copy()
-            x1, y1, x2, y2 = [int(v) for v in bboxes[0][:4]]
-            cv2.rectangle(preview, (x1, y1), (x2, y2), (0, 200, 255), 2)
-            cv2.putText(preview, f"{label}: {len(embeddings)}/{frames_to_capture}",
-                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 255), 2)
-        else:
+        elif not has_face:
             no_face_streak += 1
             if no_face_streak == 30:
                 print("\n  [!] No face detected — move closer or check IR emitter")
                 no_face_streak = 0
-            preview = frame_3ch.copy()
-            cv2.putText(preview, "No face detected", (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
         eta = max(0, (frames_to_capture - len(embeddings)) * frame_interval)
-        cv2.imshow("IR Enrollment", preview)
         sys.stdout.write(f"\r  Captured: {len(embeddings):3d}/{frames_to_capture}  ETA: {eta:.1f}s")
         sys.stdout.flush()
 
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            print("\nCancelled.")
-            cap.release()
-            cv2.destroyAllWindows()
-            sys.exit(1)
+        if not headless:
+            if has_face:
+                preview = frame_3ch.copy()
+                x1, y1, x2, y2 = [int(v) for v in bboxes[0][:4]]
+                color = (0, 255, 0) if (now - last_accepted) < frame_interval else (0, 200, 255)
+                cv2.rectangle(preview, (x1, y1), (x2, y2), color, 2)
+                cv2.putText(preview, f"{label}: {len(embeddings)}/{frames_to_capture}",
+                            (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+            else:
+                preview = frame_3ch.copy()
+                cv2.putText(preview, "No face detected", (10, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            cv2.imshow("IR Enrollment", preview)
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                print("\nCancelled.")
+                cap.release()
+                cv2.destroyAllWindows()
+                sys.exit(1)
 
     cap.release()
-    cv2.destroyAllWindows()
+    if not headless:
+        cv2.destroyAllWindows()
     print()
 
     if len(embeddings) < min_good_frames:

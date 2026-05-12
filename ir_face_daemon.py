@@ -7,7 +7,7 @@ Protocol:
   client → "<username> --verbose\n"     verbose: streamed frame lines + "DONE" line
 
 DONE line format:
-  "DONE <code> cam=<ms> recog=<ms> sim=<float> frames=<n> dark=<n>\n"
+  "DONE <code> cam=<ms> recog=<ms> sim=<float> frames=<n> dark=<n> profile=<url-encoded>\n"
 """
 
 import os
@@ -18,7 +18,7 @@ import signal
 import time
 import warnings
 import configparser
-from urllib.parse import quote, unquote
+from urllib.parse import quote
 import cv2
 import numpy as np
 
@@ -231,6 +231,12 @@ def handle_client(conn, det, rec, norm_crop):
 
         if not username:
             conn.sendall(b"DONE 12\n" if (verbose or scored) else bytes([EXIT_NO_USER]))
+            return
+
+        cfg = configparser.ConfigParser()
+        cfg.read(CONFIG_PATH)
+        if not cfg.getboolean("core", "enabled", fallback=True):
+            conn.sendall(b"DONE 10\n" if (verbose or scored) else bytes([EXIT_NO_MODEL]))
             return
 
         # scored: no per-frame stream, just the final DONE line

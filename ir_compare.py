@@ -258,9 +258,11 @@ def main():
         log(f"No model found at {model_path}")
         sys.exit(EXIT_NO_MODEL)
 
-    data   = np.load(model_path, allow_pickle=True).item()
-    stored = data["embeddings"]
-    log(f"Loaded {len(stored)} enrolled embeddings for '{username}'")
+    data       = np.load(model_path, allow_pickle=True).item()
+    model_list = data.get("models", [])
+    profiles   = [(m["label"], m["embeddings"]) for m in model_list] if model_list \
+                 else [("Default", data["embeddings"])]
+    log(f"Loaded {sum(len(e) for _, e in profiles)} embeddings for '{username}' ({len(profiles)} profile(s))")
 
     threshold     = config.getfloat("core",  "certainty",           fallback=0.65)
     required_hits = config.getint( "core",  "required_hits",        fallback=3)
@@ -314,10 +316,11 @@ def main():
     timings["ic"] = time.time() - timings["ic"]
 
     timings["fr"] = time.time()
-    total     = 0
-    dark      = 0
-    best_sim  = 0.0
-    hits      = 0
+    total      = 0
+    dark       = 0
+    best_sim   = 0.0
+    best_label = profiles[0][0]
+    hits       = 0
     snap_frame = None
 
     while time.time() - timings["fr"] < timeout:
@@ -352,15 +355,21 @@ def main():
         aimg = norm_crop(frame_3ch, landmark=kpss[0], image_size=112)
         feat = rec.get_feat(aimg).flatten()
         emb  = feat / np.linalg.norm(feat)
-        sim  = max(float(np.dot(emb, s)) for s in stored)
 
+        frame_sim, frame_label = max(
+            ((max(float(np.dot(emb, s)) for s in embs), label)
+             for label, embs in profiles),
+            key=lambda x: x[0],
+        )
+        sim = frame_sim
         if sim > best_sim:
             best_sim   = sim
+            best_label = frame_label
             snap_frame = frame_3ch
 
         if sim >= threshold:
             hits += 1
-            log(f"frame {total}: sim={sim:.4f} — hit {hits}/{required_hits}")
+            log(f"frame {total}: sim={sim:.4f} ({frame_label}) — hit {hits}/{required_hits}")
             if hits >= required_hits:
                 timings["tt"] = time.time() - timings["st"]
                 timings["fl"] = time.time() - timings["fr"]
@@ -377,7 +386,8 @@ def main():
                     print(f"Dark frames:     {dark}")
                     print(f"Best similarity: {best_sim:.4f} (threshold {threshold})")
                 if not VERBOSE:
-                    _pam_feedback(f"Face recognized — {best_sim:.0%} confidence.")
+                    label_str = f" — {best_label}" if best_label and best_label != "Default" else ""
+                    _pam_feedback(f"Face recognized{label_str} — {best_sim:.0%} confidence.")
                 sys.exit(EXIT_OK)
         else:
             hits = 0
