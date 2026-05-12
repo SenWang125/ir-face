@@ -36,29 +36,27 @@ EXIT_NO_USER  = 12
 EXIT_TOO_DARK = 13
 
 camera_lock = threading.Lock()
-_cap        = None   # persistent camera handle
-_cap_device = None   # device path it was opened on
+_warm_cap   = None   # camera pre-opened during model loading, used for first auth
 
 
-def _get_camera(device, reopen=False):
-    """Return the persistent camera, opening or reopening as needed.
-    Must be called while camera_lock is held."""
-    global _cap, _cap_device
-    if not reopen and _cap is not None and _cap_device == device and _cap.isOpened():
-        return _cap
-    if _cap is not None:
-        _cap.release()
+def _open_camera(device):
     cap = cv2.VideoCapture(device, cv2.CAP_V4L2)
     if not cap.isOpened():
-        _cap = None
         return None
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 360)
     cap.set(cv2.CAP_PROP_FPS, 30)
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-    _cap = cap
-    _cap_device = device
-    return _cap
+    return cap
+
+
+def _prewarm_camera(device):
+    """Open the camera in a background thread while models are loading.
+    Stores the handle in _warm_cap so the first auth session can reuse it."""
+    global _warm_cap
+    cap = _open_camera(device)
+    with camera_lock:
+        _warm_cap = cap  # None if open failed — recognize() will retry
 
 
 def _patch_ort_cpu():
@@ -140,81 +138,82 @@ def recognize(det, rec, norm_crop, username, stream=None):
     clahe = cv2.createCLAHE(clipLimit=clahe_clip, tileGridSize=(8, 8))
 
     with camera_lock:
+        global _warm_cap
         t_cam = time.time()
-        cap = _get_camera(device)
+        if _warm_cap is not None and _warm_cap.isOpened():
+            cap       = _warm_cap
+            _warm_cap = None          # consume; next auth opens fresh
+        else:
+            cap = _open_camera(device)
         if cap is None:
             return EXIT_TIMEOUT, {}
         cam_ms = int((time.time() - t_cam) * 1000)
 
-        total       = 0
-        dark        = 0
-        hits        = 0
-        best_sim    = 0.0
-        best_label  = profiles[0][0]
-        read_fails  = 0
-        t_recog     = time.time()
-        deadline    = t_recog + timeout
+        total      = 0
+        dark       = 0
+        hits       = 0
+        best_sim   = 0.0
+        best_label = profiles[0][0]
+        t_recog    = time.time()
+        deadline   = t_recog + timeout
+        result     = EXIT_TIMEOUT
+        info       = {}
 
-        while time.time() < deadline:
-            ret, frame = cap.read()
-            if not ret:
-                read_fails += 1
-                if read_fails >= 10:
-                    cap = _get_camera(device, reopen=True)
-                    if cap is None:
+        try:
+            while time.time() < deadline:
+                ret, frame = cap.read()
+                if not ret:
+                    continue
+                total += 1
+
+                gray = frame if frame.ndim == 2 else cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                if np.mean(gray) < dark_thresh:
+                    dark += 1
+                    if total >= 15 and dark / total > dark_ratio:
+                        result = EXIT_TOO_DARK
                         break
-                    read_fails = 0
-                continue
-            read_fails = 0
-            total += 1
+                    hits = 0
+                    continue
 
-            gray = frame if frame.ndim == 2 else cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            if np.mean(gray) < dark_thresh:
-                dark += 1
-                if total >= 15 and dark / total > dark_ratio:
-                    return EXIT_TOO_DARK, {}
-                hits = 0
-                continue
+                enhanced  = clahe.apply(gray)
+                frame_3ch = cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR)
 
-            enhanced  = clahe.apply(gray)
-            frame_3ch = cv2.cvtColor(enhanced, cv2.COLOR_GRAY2BGR)
+                bboxes, kpss = det.detect(frame_3ch, max_num=1)
+                if bboxes is None or len(bboxes) == 0 or kpss is None:
+                    emit(stream, f"frame {total}: no face detected")
+                    hits = 0
+                    continue
 
-            bboxes, kpss = det.detect(frame_3ch, max_num=1)
-            if bboxes is None or len(bboxes) == 0 or kpss is None:
-                emit(stream, f"frame {total}: no face detected")
-                hits = 0
-                continue
+                aimg = norm_crop(frame_3ch, landmark=kpss[0], image_size=112)
+                feat = rec.get_feat(aimg).flatten()
+                emb  = feat / np.linalg.norm(feat)
 
-            aimg = norm_crop(frame_3ch, landmark=kpss[0], image_size=112)
-            feat = rec.get_feat(aimg).flatten()
-            emb  = feat / np.linalg.norm(feat)
+                frame_sim, frame_label = max(
+                    ((max(float(np.dot(emb, s)) for s in embs), label)
+                     for label, embs in profiles),
+                    key=lambda x: x[0],
+                )
+                if frame_sim > best_sim:
+                    best_sim   = frame_sim
+                    best_label = frame_label
+                sim = frame_sim
 
-            frame_sim, frame_label = max(
-                ((max(float(np.dot(emb, s)) for s in embs), label)
-                 for label, embs in profiles),
-                key=lambda x: x[0],
-            )
-            if frame_sim > best_sim:
-                best_sim   = frame_sim
-                best_label = frame_label
-            sim = frame_sim
-
-            if sim >= threshold:
-                hits += 1
-                emit(stream, f"frame {total}: sim={sim:.4f} ({frame_label}) — hit {hits}/{required_hits}")
-                if hits >= required_hits:
-                    recog_ms = int((time.time() - t_recog) * 1000)
-                    return EXIT_OK, {"cam": cam_ms, "recog": recog_ms,
-                                     "sim": best_sim, "frames": total, "dark": dark,
-                                     "profile": best_label}
-            else:
-                emit(stream, f"frame {total}: sim={sim:.4f} below threshold, reset")
-                hits = 0
+                if sim >= threshold:
+                    hits += 1
+                    emit(stream, f"frame {total}: sim={sim:.4f} ({frame_label}) — hit {hits}/{required_hits}")
+                    if hits >= required_hits:
+                        result = EXIT_OK
+                        break
+                else:
+                    emit(stream, f"frame {total}: sim={sim:.4f} below threshold, reset")
+                    hits = 0
+        finally:
+            cap.release()   # always close — camera held only during the auth session
 
     recog_ms = int((time.time() - t_recog) * 1000)
-    return EXIT_TIMEOUT, {"cam": cam_ms, "recog": recog_ms,
-                          "sim": best_sim, "frames": total, "dark": dark,
-                          "profile": best_label}
+    info = {"cam": cam_ms, "recog": recog_ms, "sim": best_sim,
+            "frames": total, "dark": dark, "profile": best_label}
+    return result, info
 
 
 def handle_client(conn, det, rec, norm_crop):
@@ -268,10 +267,15 @@ def main():
     det_pack   = config.get("core", "det_pack",          fallback=model_name)
     rec_pack   = config.get("core", "rec_pack",          fallback=model_name)
 
+    device = config.get("video", "device", fallback="/dev/video2")
+
     print(f"[ir-face] Loading det={det_pack} rec={rec_pack} (CPU)...", file=sys.stderr, flush=True)
     t0 = time.time()
 
     _patch_ort_cpu()
+
+    # Open the camera in the background while models load — amortises V4L2 init
+    threading.Thread(target=_prewarm_camera, args=(device,), daemon=True).start()
 
     devnull_fd = os.open(os.devnull, os.O_WRONLY)
     saved2     = os.dup(2)
@@ -289,15 +293,6 @@ def main():
 
     print(f"[ir-face] Ready in {time.time()-t0:.1f}s (CPU-only, no GPU held)", file=sys.stderr, flush=True)
 
-    # Pre-open the camera so the first auth request pays no V4L2 init cost
-    device = config.get("video", "device", fallback="/dev/video2")
-    with camera_lock:
-        cap = _get_camera(device)
-        if cap is not None:
-            print(f"[ir-face] Camera open: {device}", file=sys.stderr, flush=True)
-        else:
-            print(f"[ir-face] Warning: cannot open {device} — will retry on first auth", file=sys.stderr, flush=True)
-
     try:
         os.unlink(SOCKET_PATH)
     except FileNotFoundError:
@@ -309,8 +304,8 @@ def main():
     srv.listen(4)
 
     def _shutdown(sig, frame):
-        if _cap is not None:
-            _cap.release()
+        if _warm_cap is not None:
+            _warm_cap.release()
         srv.close()
         try:
             os.unlink(SOCKET_PATH)
