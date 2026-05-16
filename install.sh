@@ -216,10 +216,6 @@ configure_pam_targets() {
         pam_write_file /etc/pam.d/su "$mode" "$PAM_AUTH" "$PAM_AUTH" "$PAM_AUTH"
         info "Updated /etc/pam.d/su"
     fi
-    # polkit — GUI elevation dialogs (KDE, GNOME, etc.) use this
-    # /usr/lib/pam.d/polkit-1 is the package default; /etc/pam.d/ overrides it
-    pam_write_file /etc/pam.d/polkit-1 "$mode" "$PAM_AUTH" "$PAM_AUTH" "$PAM_AUTH"
-    info "Updated /etc/pam.d/polkit-1 (GUI elevation)"
     # Display manager (GUI screen lock)
     configure_dm "$mode"
 }
@@ -276,6 +272,20 @@ case "$PAM_CHOICE" in
         info "Invalid choice — skipping PAM"
         ;;
 esac
+
+if [[ "$PAM_CHOICE" == "1" || "$PAM_CHOICE" == "2" ]]; then
+    echo ""
+    echo "  GUI elevation dialogs (polkit — used by KDE/GNOME for package installs,"
+    echo "  system settings, etc.) use a separate PAM file not patched above."
+    ask "  Also enable face auth for polkit GUI prompts? [y/N]: " POLKIT_CHOICE
+    if [[ "${POLKIT_CHOICE,,}" == "y" ]]; then
+        [[ "$PAM_CHOICE" == "1" ]] && polkit_mode=password-first || polkit_mode=face-first
+        pam_write_file /etc/pam.d/polkit-1 "$polkit_mode" "$PAM_AUTH" "$PAM_AUTH" "$PAM_AUTH"
+        info "Updated /etc/pam.d/polkit-1"
+    else
+        info "Skipping polkit — /etc/pam.d/polkit-1 unchanged"
+    fi
+fi
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 echo ""
