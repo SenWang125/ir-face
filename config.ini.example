@@ -30,7 +30,7 @@ antispoof_enabled = false
 
 # Real-face probability threshold for the anti-spoof ensemble (0.0–1.0)
 # Lower = more permissive (fewer false rejects); higher = stricter (more spoof protection)
-antispoof_threshold = 0.45
+antispoof_threshold = 0.60
 
 [video]
 # IR camera V4L2 device node

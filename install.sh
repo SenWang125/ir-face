@@ -216,6 +216,10 @@ configure_pam_targets() {
         pam_write_file /etc/pam.d/su "$mode" "$PAM_AUTH" "$PAM_AUTH" "$PAM_AUTH"
         info "Updated /etc/pam.d/su"
     fi
+    # polkit — GUI elevation dialogs (KDE, GNOME, etc.) use this
+    # /usr/lib/pam.d/polkit-1 is the package default; /etc/pam.d/ overrides it
+    pam_write_file /etc/pam.d/polkit-1 "$mode" "$PAM_AUTH" "$PAM_AUTH" "$PAM_AUTH"
+    info "Updated /etc/pam.d/polkit-1 (GUI elevation)"
     # Display manager (GUI screen lock)
     configure_dm "$mode"
 }
