@@ -275,9 +275,11 @@ esac
 
 if [[ "$PAM_CHOICE" == "1" || "$PAM_CHOICE" == "2" ]]; then
     echo ""
-    echo "  GUI elevation dialogs (polkit — used by KDE/GNOME for package installs,"
-    echo "  system settings, etc.) use a separate PAM file not patched above."
-    ask "  Also enable face auth for polkit GUI prompts? [y/N]: " POLKIT_CHOICE
+    echo "  [Optional / at your own risk]"
+    echo "  polkit controls GUI elevation dialogs (KDE/GNOME package installs,"
+    echo "  system settings, etc.) and uses a separate PAM file."
+    echo "  See README or config.ini.example for details before enabling."
+    ask "  Also patch polkit for face auth? [y/N]: " POLKIT_CHOICE
     if [[ "${POLKIT_CHOICE,,}" == "y" ]]; then
         [[ "$PAM_CHOICE" == "1" ]] && polkit_mode=password-first || polkit_mode=face-first
         pam_write_file /etc/pam.d/polkit-1 "$polkit_mode" "$PAM_AUTH" "$PAM_AUTH" "$PAM_AUTH"
