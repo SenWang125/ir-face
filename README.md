@@ -92,6 +92,8 @@ det_pack = buffalo_s    # Detector model pack
 rec_pack = buffalo_m    # Recognizer — must match the value used during enrollment
 max_models = 5          # Max stored profiles per user
 end_report = false      # Print timing + similarity info after each auth
+antispoof_enabled = false   # Enable MiniFASNet anti-spoof check (run download-antispoof.sh first)
+antispoof_threshold = 0.45  # Real-face probability threshold (0–1, lower = more permissive)
 
 [video]
 device = /dev/video2    # IR camera V4L2 device node
