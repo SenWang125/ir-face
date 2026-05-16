@@ -226,7 +226,8 @@ def recognize(det, rec, norm_crop, username, stream=None, antispoof_sessions=Non
                     continue
 
                 if as_sessions:
-                    real_prob = _run_antispoof(as_sessions, frame_3ch, bboxes[0])
+                    frame_raw_3ch = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+                    real_prob = _run_antispoof(as_sessions, frame_raw_3ch, bboxes[0])
                     if real_prob < antispoof_thresh:
                         emit(stream, f"frame {total}: anti-spoof rejected (real={real_prob:.3f})")
                         hits = 0

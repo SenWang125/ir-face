@@ -400,7 +400,10 @@ def main():
             continue
 
         if antispoof_sessions:
-            real_prob = _run_antispoof(antispoof_sessions, frame_3ch, bboxes[0])
+            # Use raw (pre-CLAHE) IR texture for anti-spoof — CLAHE distorts subtle
+            # texture differences between real skin and paper/screen that the model relies on
+            frame_raw_3ch = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+            real_prob = _run_antispoof(antispoof_sessions, frame_raw_3ch, bboxes[0])
             log(f"frame {total}: anti-spoof real_prob={real_prob:.3f}")
             if real_prob < antispoof_thresh:
                 hits = 0
